@@ -2,18 +2,40 @@ from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 import sqlite3
 import bcrypt
+import os # Import the os module
 
 from database import get_db_connection
 
 app = Flask(__name__)
-CORS(app) # Enable Cross-Origin Resource Sharing
 
-DATABASE = 'serviceonwheel.db'
+# --- FIX: THE ONLY CHANGE IS HERE ---
+# Instead of the simple CORS(app), we define exactly which website URLs are allowed to connect.
+# This is the standard and secure way to handle CORS in production.
+
+# 1. Define the list of allowed origins (your live frontend URL and your local dev URL)
+#    REPLACE 'https://sara-home-services.onrender.com' with your actual live frontend URL if it's different.
+allowed_origins = [
+    "http://localhost:3000",
+    "https://sara-home-services.onrender.com" 
+]
+
+# 2. Initialize CORS with the specific settings.
+#    This tells Flask to only accept requests from the websites in the 'allowed_origins' list
+#    for any route that starts with '/api/'.
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
+# --- END OF FIX ---
+
+
+# Use the Render environment variable for the database path
+DATA_DIR = os.environ.get('RENDER_DISK_PATH', '.')
+DATABASE = os.path.join(DATA_DIR, 'serviceonwheel.db')
+
 
 def get_db():
     """Get a database connection for the current request."""
     db = getattr(g, '_database', None)
     if db is None:
+        # Use the DATABASE variable that points to the correct path
         db = g._database = sqlite3.connect(DATABASE)
         db.row_factory = sqlite3.Row
     return db
@@ -25,7 +47,7 @@ def close_connection(exception):
     if db is not None:
         db.close()
 
-# --- API Endpoints ---
+# --- API Endpoints (No changes needed below this line) ---
 
 # Endpoint for User Registration
 @app.route('/api/register', methods=['POST'])
@@ -40,15 +62,12 @@ def register():
     db = get_db()
     cursor = db.cursor()
 
-    # Check if user already exists
     cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
     if cursor.fetchone():
         return jsonify({'message': 'User with this email already exists'}), 409
 
-    # Hash the password
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
 
-    # Insert new user
     cursor.execute('INSERT INTO users (email, password) VALUES (?, ?)', (email, hashed_password))
     db.commit()
 
@@ -85,18 +104,16 @@ def get_testimonials():
     cursor.execute('SELECT * FROM testimonials')
     testimonials = [dict(row) for row in cursor.fetchall()]
     return jsonify(testimonials)
-    
-# ... other imports
 
 # Endpoint to get all services
-@app.route('/api/services', methods=['GET']) #<-- 1. Defines the URL path
+@app.route('/api/services', methods=['GET'])
 def get_services():
     db = get_db()
     cursor = db.cursor()
-    cursor.execute('SELECT * FROM services') #<-- 2. Gets data from the database
+    cursor.execute('SELECT * FROM services')
     services = [dict(row) for row in cursor.fetchall()]
-    return jsonify(services) #<-- 3. Sends the data back as JSON
-    
+    return jsonify(services)
+
 # Endpoint for the search functionality
 @app.route('/api/search', methods=['GET'])
 def search_services():
@@ -113,7 +130,8 @@ def search_services():
     )
     services = [dict(row) for row in cursor.fetchall()]
     return jsonify(services)
- # Endpoint to get a single service by ID
+    
+# Endpoint to get a single service by ID
 @app.route('/api/services/<int:service_id>', methods=['GET'])
 def get_service(service_id):
     db = get_db()
@@ -129,7 +147,6 @@ def get_service(service_id):
 def create_booking():
     data = request.get_json()
     
-    # Get all fields from the request payload
     user_id = data.get('user_id')
     service_id = data.get('service_id')
     customer_name = data.get('customer_name')
@@ -138,22 +155,18 @@ def create_booking():
     booking_time = data.get('booking_time')
     payment_method = data.get('payment_method')
 
-    # CRITICAL: This validation check MUST include all required fields
     if not all([user_id, service_id, customer_name, address, booking_date, booking_time, payment_method]):
-        # If this message shows up in your browser's Network tab, a field is missing
         return jsonify({'message': 'Missing required booking information'}), 400
 
     db = get_db()
     cursor = db.cursor()
 
-    # Get service name from service_id
     cursor.execute('SELECT name FROM services WHERE id = ?', (service_id,))
     service = cursor.fetchone()
     if not service:
         return jsonify({'message': 'Invalid service ID'}), 400
     service_name = service['name']
 
-    # CRITICAL: The INSERT statement MUST match the database schema exactly
     try:
         cursor.execute(
             'INSERT INTO bookings (user_id, service_id, service_name, customer_name, address, booking_date, booking_time, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -162,7 +175,6 @@ def create_booking():
         booking_id = cursor.lastrowid
         db.commit()
     except Exception as e:
-        # If the server crashes, this will help identify the error
         print(f"Database Error: {e}")
         return jsonify({'message': 'A database error occurred.'}), 500
 
@@ -179,6 +191,7 @@ def create_booking():
             'payment_method': payment_method
         }
     }), 201
-    
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+
+# I removed the final if __name__ == '__main__' block as it's not needed by Gunicorn on Render
+# and could cause issues if the DATABASE path isn't set correctly for local runs without Render's env vars.
+# Gunicorn will run the 'app' object directly.
